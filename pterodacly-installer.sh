@@ -32,6 +32,7 @@ fi
 echo -n "* Enter your FQDN or IP (e.g., panel.example.com): "
 read -r FQDN
 FQDN="${FQDN:-panel.example.com}"
+LOCAL_IP=$(hostname -I | awk '{print $1}')
 
 # Database configuration
 MYSQL_DB="panel"
@@ -170,25 +171,48 @@ configure_nginx() {
     # Create nginx configuration
     cat > /etc/nginx/sites-available/pterodactyl.conf <<EOF
 server {
+    # Replace the example <domain> with your domain name or IP address
     listen 80;
-    server_name ${FQDN};
-    return 301 https://\$host\$request_uri;
+    server_name ${LOCAL_IP};
+    return 301 https://$server_name$request_uri;
 }
 
 server {
+    # Replace the example <domain> with your domain name or IP address
     listen 443 ssl http2;
-    server_name ${FQDN};
+    server_name ${LOCAL_IP};
 
-    # SSL configuration - self-signed certs will be generated
-    ssl_certificate /etc/ssl/certs/nginx-selfsigned.crt;
-    ssl_certificate_key /etc/ssl/private/nginx-selfsigned.key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    
     root /var/www/pterodactyl/public;
     index index.php;
 
+    access_log /var/log/nginx/pterodactyl.app-access.log;
+    error_log  /var/log/nginx/pterodactyl.app-error.log error;
+
+    # allow larger file uploads and longer script runtimes
+    client_max_body_size 100m;
+    client_body_timeout 120s;
+
+    sendfile off;
+
+    # SSL Configuration - Replace the example <domain> with your domain
+    ssl_certificate /etc/certs/fullchain.pem;
+    ssl_certificate_key /etc/certs/privkey.pem;
+    ssl_session_cache shared:SSL:10m;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384";
+    ssl_prefer_server_ciphers on;
+
+    # See https://hstspreload.org/ before uncommenting the line below.
+    # add_header Strict-Transport-Security "max-age=15768000; preload;";
+    add_header X-Content-Type-Options nosniff;
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Robots-Tag none;
+    add_header Content-Security-Policy "frame-ancestors 'self'";
+    add_header X-Frame-Options DENY;
+    add_header Referrer-Policy same-origin;
+
     location / {
-        try_files \$uri \$uri/ /index.php?\$query_string;
+        try_files $uri $uri/ /index.php?$query_string;
     }
 
     location ~ \.php$ {
@@ -196,8 +220,8 @@ server {
         fastcgi_pass unix:/run/php/php8.3-fpm.sock;
         fastcgi_index index.php;
         include fastcgi_params;
-        fastcgi_param PHP_VALUE "upload_max_filesize=100M \n post_max_size=100M";
-        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_param PHP_VALUE "upload_max_filesize = 100M \n post_max_size=100M";
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
         fastcgi_param HTTP_PROXY "";
         fastcgi_intercept_errors off;
         fastcgi_buffer_size 16k;
@@ -205,6 +229,7 @@ server {
         fastcgi_connect_timeout 300;
         fastcgi_send_timeout 300;
         fastcgi_read_timeout 300;
+        include /etc/nginx/fastcgi_params;
     }
 
     location ~ /\.ht {
@@ -213,12 +238,10 @@ server {
 }
 EOF
 
-    # Generate self-signed SSL certificates
-    mkdir -p /etc/ssl/private /etc/ssl/certs
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout /etc/ssl/private/nginx-selfsigned.key \
-        -out /etc/ssl/certs/nginx-selfsigned.crt \
-        -subj "/CN=${FQDN}"
+    # Generate self-signed SSL certificates  
+    mkdir -p /etc/certs
+    cd /etc/certs
+    openssl req -new -newkey rsa:4096 -days 3650 -nodes -x509 -subj "/C=NA/ST=NA/L=NA/O=NA/CN=Generic SSL Certificate" -keyout privkey.pem -out fullchain.pem
 
     # Enable site
     ln -sf /etc/nginx/sites-available/pterodactyl.conf /etc/nginx/sites-enabled/
